@@ -1,0 +1,92 @@
+{
+  "name": "Crashlytics Auto Triage Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "8fcc9702-c870-4ff4-a3f3-45ffb5ffc8ea",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const execution = $json.execution || {};\nconst lastNode = execution.lastNodeExecuted || 'unknown';\nconst error = $json.error || {};\nconst message = error.message || 'unknown error';\n\nconst issueId = execution?.workflowData?.issueId || execution?.data?.resultData?.runData?.['Normalize Payload']?.[0]?.data?.main?.[0]?.[0]?.json?.issueId || 'unknown';\nconst channelId = execution?.workflowData?.channelId || process.env.SLACK_DEFAULT_CHANNEL_ID || '';\nconst threadTs = execution?.workflowData?.threadTs || '';\n\nconst text = [\n  '자동 트리아지 파이프라인 실패 알림입니다.',\n  `- issueId: ${issueId}`,\n  `- lastNode: ${lastNode}`,\n  `- error: ${message}`,\n  '재시도 또는 수동 점검이 필요합니다.'\n].join('\\n');\n\nreturn [{ json: { channelId, threadTs, text } }];"
+      },
+      "id": "278f2881-cc67-4e56-b80a-31fd3a785cb4",
+      "name": "Build Error Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -280,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/reply-thread' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { channelId: $json.channelId, threadTs: $json.threadTs, text: $json.text } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "ae915780-6849-44a5-8014-6b7f2ff3f076",
+      "name": "Reply Error Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -40,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Error Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Comment": {
+      "main": [
+        [
+          {
+            "node": "Reply Error Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false,
+  "versionId": "62f88c77-6f1e-4a3d-96c4-d432e75e8bd6"
+}

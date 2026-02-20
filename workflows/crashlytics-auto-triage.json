@@ -1,0 +1,565 @@
+{
+  "name": "Crashlytics Auto Triage",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "crashlytics-webhook",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "f7ac9cb6-654f-46c9-9afa-59fc7464847f",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1640,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json;\nconst issueId = body.issueId || body.issue?.id;\nif (!issueId) throw new Error('issueId is required');\n\nreturn [{\n  json: {\n    issueId,\n    appId: body.appId || body.app?.id || '',\n    issueTitle: body.issueTitle || body.title || 'Crashlytics issue',\n    platform: body.platform || 'Android',\n    appVersion: body.appVersion || body.version || '',\n    eventTime: body.eventTime || body.timestamp || new Date().toISOString(),\n    fatal: body.fatal ?? true,\n    channelId: body.slack?.channelId || $env.SLACK_DEFAULT_CHANNEL_ID || '',\n    traceId: `crashlytics:${issueId}`\n  }\n}];"
+      },
+      "id": "cb1035c7-c195-4514-baf8-22915daccd16",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1420,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $getWorkflowStaticData('global');\nif (!data.issueLocks) data.issueLocks = {};\n\nconst issueId = $json.issueId;\nif (data.issueLocks[issueId]) {\n  return [{ json: { ...$json, duplicate: true, lockCreatedAt: data.issueLocks[issueId] } }];\n}\n\ndata.issueLocks[issueId] = new Date().toISOString();\nreturn [{ json: { ...$json, duplicate: false, lockCreatedAt: data.issueLocks[issueId] } }];"
+      },
+      "id": "11c1f6fc-ae21-4bd6-a507-9767fbf3f34f",
+      "name": "Acquire Idempotency Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e45e1ad6-cc7e-4587-b20b-7eb9bafaf697",
+              "leftValue": "={{ $json.duplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4055d74a-dd4d-4f29-a9bb-6f9d8245e8ce",
+      "name": "If Duplicate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -980,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "26f4f406-9a06-4628-ab16-e5cb8f2486aa",
+              "name": "message",
+              "value": "duplicate issueId already being processed",
+              "type": "string"
+            },
+            {
+              "id": "22330f6b-2f48-4dce-885d-c80c489654d2",
+              "name": "issueId",
+              "value": "={{ $json.issueId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "da213f89-fec8-484a-a74d-c625fc7ea802",
+      "name": "Duplicate Exit",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -760,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/find-thread' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { issueId: $json.issueId, channelId: $json.channelId, issueTitle: $json.issueTitle } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "42350a0f-3c5f-4c2a-b042-c0473e5f5a32",
+      "name": "Find Slack Thread",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -760,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/firebase/analyze-crashlytics' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { appId: $node['Normalize Payload'].json.appId, issueId: $node['Normalize Payload'].json.issueId } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "3030fe14-9a32-4306-81c2-a0879187ed24",
+      "name": "Firebase Analyze",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -540,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $node['Normalize Payload'].json;\nconst thread = $node['Find Slack Thread'].json;\nconst analysis = $node['Firebase Analyze'].json;\n\nconst channelId = thread.channelId || payload.channelId;\nconst threadTs = thread.threadTs;\nif (!channelId || !threadTs) throw new Error('channelId/threadTs not found');\n\nconst summary = analysis.summary || '원인 분석 요약을 생성하지 못했습니다.';\nconst impact = analysis.impact || '영향 범위를 확인 중입니다.';\nconst cause = analysis.cause || '원인을 확정하지 못했습니다.';\nconst evidence = Array.isArray(analysis.evidence) ? analysis.evidence : [];\nconst recommendations = Array.isArray(analysis.recommendations) ? analysis.recommendations : [];\n\nconst evidenceText = evidence.length ? evidence.map((e) => `- ${e}`).join('\\n') : '- 추가 근거 수집 필요';\nconst recommendationText = recommendations.length ? recommendations.map((r, i) => `${i + 1}) ${r}`).join('\\n') : '1) 재현 로그 확대 수집\\n2) 관련 경로 참조 정리';\n\nconst comment = [\n  '분석 완료 공유드립니다.',\n  '',\n  `- 이슈: ${payload.issueId} (${payload.platform}, ${payload.appVersion || 'unknown'})`,\n  `- 발생 시각: ${payload.eventTime}`,\n  `- 분석 요약: ${summary}`,\n  `- 영향 범위: ${impact}`,\n  `- 핵심 원인: ${cause}`,\n  '- 근거:',\n  evidenceText,\n  '',\n  '제안 액션',\n  recommendationText,\n  '',\n  '본 프로젝트 기준으로 권장 수정사항까지 바로 반영할까요?'\n].join('\\n');\n\nreturn [{\n  json: {\n    ...payload,\n    channelId,\n    threadTs,\n    rcaComment: comment,\n    recommendations\n  }\n}];"
+      },
+      "id": "c639061b-10d3-4bc6-a4d8-fd61c89bb624",
+      "name": "Build RCA Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/reply-thread' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { channelId: $json.channelId, threadTs: $json.threadTs, text: $json.rcaComment } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "4a94a2bd-c6af-4ae0-8f35-4bd7609ddf1b",
+      "name": "Reply RCA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -100,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/github/issues' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { owner: $env.GITHUB_OWNER, repo: $env.GITHUB_REPO, title: '[Crashlytics] ' + $node['Normalize Payload'].json.issueId + ' ' + $node['Normalize Payload'].json.issueTitle, body: $node['Build RCA Comment'].json.rcaComment, labels: ['bug', 'auto-triage'] } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "18ce82ea-a9ec-4e30-a99e-af6fb4e2d01f",
+      "name": "Create GitHub Issue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        120,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const issueNumber = Number($json.issueNumber || $json.number);\nif (!issueNumber) throw new Error('Issue number missing from GitHub response');\n\nconst branchName = `#${issueNumber}`;\nconst encodedBranchName = branchName.replace(/#/g, '%23');\n\nreturn [{\n  json: {\n    issueNumber,\n    issueUrl: $json.issueUrl || $json.html_url || '',\n    repoHtmlUrl: $json.repoHtmlUrl || (`https://github.com/${$env.GITHUB_OWNER}/${$env.GITHUB_REPO}`),\n    branchName,\n    encodedBranchName\n  }\n}];"
+      },
+      "id": "f71cbf39-a3d0-4f8f-b2dc-3f539e5682a3",
+      "name": "Build Git Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/github/branches' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { owner: $env.GITHUB_OWNER, repo: $env.GITHUB_REPO, branch: $json.branchName, fromBranch: $env.TARGET_REPO_DEFAULT_BRANCH || 'main' } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "cb1a1e94-f23d-45ee-a4c3-9ce0c9f80457",
+      "name": "Create GitHub Branch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=bash /opt/n8n/scripts/apply_recommended_fix.sh \"{{$node[\"Normalize Payload\"].json.issueId}}\" \"{{$node[\"Build Git Context\"].json.issueNumber}}\""
+      },
+      "id": "8a3e547b-c559-4ce8-b70d-8f4b0c1cfbf5",
+      "name": "Apply Recommended Fix",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        780,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=bash /opt/n8n/scripts/commit_and_push.sh \"{{$node[\"Build Git Context\"].json.branchName}}\" \"{{$node[\"Build Git Context\"].json.issueNumber}}\" \"{{$node[\"Normalize Payload\"].json.issueId}}\""
+      },
+      "id": "eaf1b778-7ea4-4cf5-b62a-81f31de6593b",
+      "name": "Commit and Push",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $node['Normalize Payload'].json;\nconst thread = $node['Find Slack Thread'].json;\nconst gitCtx = $node['Build Git Context'].json;\nconst push = $node['Commit and Push'].json;\n\nconst lines = String(push.stdout || '').split(/\\n/);\nconst kv = {};\nfor (const line of lines) {\n  const i = line.indexOf('=');\n  if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1);\n}\n\nconst noChanges = kv.NO_CHANGES === 'true';\nconst commitSha = kv.COMMIT_SHA || '';\nconst baseRepoUrl = `https://github.com/${$env.GITHUB_OWNER}/${$env.GITHUB_REPO}`;\nconst branchUrl = `${baseRepoUrl}/tree/${gitCtx.encodedBranchName}`;\nconst commitUrl = commitSha ? `${baseRepoUrl}/commit/${commitSha}` : '';\n\nconst text = [\n  '조치 완료 공유드립니다.',\n  `- 이슈: ${gitCtx.issueUrl || '(created)'}`,\n  `- 브랜치: ${gitCtx.branchName} (${branchUrl})`,\n  noChanges ? '- 코드 변경: 없음 (권장 수정 스크립트가 no-op 반환)' : `- 커밋: ${commitUrl}`,\n  `- 대상 Crashlytics: ${payload.issueId}`\n].join('\\n');\n\nreturn [{\n  json: {\n    channelId: thread.channelId || payload.channelId,\n    threadTs: thread.threadTs,\n    finalComment: text\n  }\n}];"
+      },
+      "id": "eca407f8-059e-4fdd-ae46-5938a0329bc5",
+      "name": "Build Completion Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/reply-thread' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { channelId: $json.channelId, threadTs: $json.threadTs, text: $json.finalComment } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "5d71eb3f-fb38-4049-b6de-03726a8479f5",
+      "name": "Reply Completion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $getWorkflowStaticData('global');\nconst issueId = $node['Normalize Payload'].json.issueId;\nif (data.issueLocks && data.issueLocks[issueId]) delete data.issueLocks[issueId];\n\nreturn [{ json: { message: 'done', issueId } }];"
+      },
+      "id": "8cb2a343-5fce-4cc8-a865-f06118fbbf98",
+      "name": "Release Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Payload": {
+      "main": [
+        [
+          {
+            "node": "Acquire Idempotency Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acquire Idempotency Lock": {
+      "main": [
+        [
+          {
+            "node": "If Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Duplicate Exit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Slack Thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Slack Thread": {
+      "main": [
+        [
+          {
+            "node": "Firebase Analyze",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firebase Analyze": {
+      "main": [
+        [
+          {
+            "node": "Build RCA Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build RCA Comment": {
+      "main": [
+        [
+          {
+            "node": "Reply RCA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply RCA": {
+      "main": [
+        [
+          {
+            "node": "Create GitHub Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GitHub Issue": {
+      "main": [
+        [
+          {
+            "node": "Build Git Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Git Context": {
+      "main": [
+        [
+          {
+            "node": "Create GitHub Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GitHub Branch": {
+      "main": [
+        [
+          {
+            "node": "Apply Recommended Fix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Recommended Fix": {
+      "main": [
+        [
+          {
+            "node": "Commit and Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit and Push": {
+      "main": [
+        [
+          {
+            "node": "Build Completion Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Completion Comment": {
+      "main": [
+        [
+          {
+            "node": "Reply Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Completion": {
+      "main": [
+        [
+          {
+            "node": "Release Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false,
+  "versionId": "cbfa14c3-b939-4f9a-890d-2f2f9352ff26"
+}

@@ -1,0 +1,12 @@
+{
+  "appId": "1:1234567890:android:abc123def456",
+  "issueId": "ca8f7f21e3ec633d0d1dca453409435b",
+  "issueTitle": "ClassNotFoundException: com.example.app.ui.qrcode.QRScannerActivity",
+  "platform": "Android",
+  "appVersion": "3.2.2",
+  "eventTime": "2026-01-24T11:54:17Z",
+  "fatal": true,
+  "slack": {
+    "channelId": "C04QWTC2PT4"
+  }
+}
