@@ -20,18 +20,16 @@ Crashlytics webhook -> Slack thread RCA -> GitHub Issue -> `#<issue_number>` bra
 - **Redis**: queue transport between n8n main and worker (execution coordination)
 - **n8n main**: receives webhook and orchestrates flow
 - **n8n worker**: performs long-running tasks (analysis/git operations)
-- **MCP Bridge (HTTP)**: n8n calls MCP-backed endpoints for Slack/Firebase/GitHub actions
+- **Direct API calls from n8n**: Slack/GitHub/OpenAI are called from HTTP Request nodes (no MCP bridge dependency)
 
 ## 3. Prerequisites
 
 - Docker Desktop
 - Git push access to target repository
-- MCP bridge endpoint (or compatible API) exposing:
-  - `POST /slack/find-thread`
-  - `POST /slack/reply-thread`
-  - `POST /firebase/analyze-crashlytics`
-  - `POST /github/issues`
-  - `POST /github/branches`
+- API tokens:
+  - Slack Bot Token (`chat:write`, `channels:history` or equivalent scope for target channel)
+  - GitHub Token (`repo` scope for issues + branch push)
+  - OpenAI API key
 
 ## 4. Local Setup
 
@@ -47,8 +45,9 @@ cp .env.example .env
 Required minimum:
 - `N8N_ENCRYPTION_KEY` (fixed secret, 32+ chars)
 - `TARGET_REPO_PATH` (absolute path on your host)
-- `MCP_BRIDGE_BASE_URL`
-- `MCP_BRIDGE_TOKEN`
+- `OPENAI_API_KEY`
+- `SLACK_BOT_TOKEN`
+- `GITHUB_TOKEN`
 - `GITHUB_OWNER`
 - `GITHUB_REPO`
 - `SLACK_DEFAULT_CHANNEL_ID` (optional but recommended)
@@ -66,7 +65,7 @@ docker compose up -d
 
 1. Import `workflows/crashlytics-auto-triage.json`
 2. Import `workflows/crashlytics-auto-triage-error.json`
-3. Review every HTTP Request node URL/headers/body
+3. Review every HTTP Request node URL/headers/body and required tokens
 4. Activate both workflows
 
 ## 6. Branch Naming Rule (Critical)
@@ -109,11 +108,11 @@ curl -X POST 'http://localhost:5678/webhook/crashlytics-webhook' \
 Expected flow:
 1. Webhook accepted
 2. issueId lock acquired
-3. Slack thread resolved
-4. Firebase analysis retrieved
+3. Slack thread resolved (direct Slack API)
+4. AI analysis generated (OpenAI API)
 5. RCA reply posted to Slack thread
-6. GitHub issue created
-7. `#<issue_number>` branch created
+6. GitHub issue created (direct GitHub API)
+7. `#<issue_number>` branch pushed
 8. auto-fix script executed
 9. commit/push attempted
 10. completion reply posted to Slack thread
@@ -146,7 +145,7 @@ Signature:
 6. Ensure Git auth is configured (SSH key or PAT)
 7. `docker compose up -d`
 8. Import both workflow JSON files
-9. Re-check MCP bridge URL/token reachability
+9. Verify Slack/GitHub/OpenAI token reachability
 10. Run smoke test payload
 11. Verify Slack reply, GitHub issue, branch creation, and push
 

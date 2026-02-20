@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json;\nconst issueId = body.issueId || body.issue?.id;\nif (!issueId) throw new Error('issueId is required');\n\nreturn [{\n  json: {\n    issueId,\n    appId: body.appId || body.app?.id || '',\n    issueTitle: body.issueTitle || body.title || 'Crashlytics issue',\n    platform: body.platform || 'Android',\n    appVersion: body.appVersion || body.version || '',\n    eventTime: body.eventTime || body.timestamp || new Date().toISOString(),\n    fatal: body.fatal ?? true,\n    channelId: body.slack?.channelId || $env.SLACK_DEFAULT_CHANNEL_ID || '',\n    traceId: `crashlytics:${issueId}`\n  }\n}];"
+        "jsCode": "let body = $json;\n\n// Webhook v2 may wrap payload under `body`, and some senders nest again under `payload`.\nif (body && typeof body === 'object' && body.body && typeof body.body === 'object') {\n  body = body.body;\n}\nif (body && typeof body === 'object' && body.payload && typeof body.payload === 'object') {\n  body = body.payload;\n}\n\nconst issueId = body.issueId || body.issue?.id;\nif (!issueId) throw new Error('issueId is required');\n\nreturn [{\n  json: {\n    issueId,\n    appId: body.appId || body.app?.id || '',\n    issueTitle: body.issueTitle || body.title || 'Crashlytics issue',\n    platform: body.platform || 'Android',\n    appVersion: body.appVersion || body.version || '',\n    eventTime: body.eventTime || body.timestamp || new Date().toISOString(),\n    fatal: body.fatal ?? true,\n    channelId: body.slack?.channelId || body.channelId || $env.SLACK_DEFAULT_CHANNEL_ID || '',\n    traceId: `crashlytics:${issueId}`\n  }\n}];"
       },
       "id": "cb1035c7-c195-4514-baf8-22915daccd16",
       "name": "Normalize Payload",
@@ -108,13 +108,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/find-thread' }}",
+        "url": "https://slack.com/api/conversations.history",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.SLACK_BOT_TOKEN }}"
             },
             {
               "name": "Content-Type",
@@ -124,7 +124,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { issueId: $json.issueId, channelId: $json.channelId, issueTitle: $json.issueTitle } }}",
+        "jsonBody": "={{ { channel: $node['Normalize Payload'].json.channelId, limit: 200 } }}",
         "options": {
           "timeout": 120000
         }
@@ -141,13 +141,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/firebase/analyze-crashlytics' }}",
+        "url": "https://api.openai.com/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
             },
             {
               "name": "Content-Type",
@@ -157,13 +157,13 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { appId: $node['Normalize Payload'].json.appId, issueId: $node['Normalize Payload'].json.issueId } }}",
+        "jsonBody": "={{ { model: $env.OPENAI_MODEL || 'gpt-4o-mini', temperature: 0.2, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'You are a senior Android crash triage AI agent. Analyze crash payload and return JSON only with keys: summary, impact, cause, evidence, recommendations. evidence and recommendations must be arrays of strings.' }, { role: 'user', content: 'Analyze this Crashlytics webhook payload and write concise Korean output as JSON only.\\nPayload:\\n' + JSON.stringify($node['Normalize Payload'].json, null, 2) } ] } }}",
         "options": {
           "timeout": 120000
         }
       },
       "id": "3030fe14-9a32-4306-81c2-a0879187ed24",
-      "name": "Firebase Analyze",
+      "name": "AI Agent Analyze",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -173,7 +173,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $node['Normalize Payload'].json;\nconst thread = $node['Find Slack Thread'].json;\nconst analysis = $node['Firebase Analyze'].json;\n\nconst channelId = thread.channelId || payload.channelId;\nconst threadTs = thread.threadTs;\nif (!channelId || !threadTs) throw new Error('channelId/threadTs not found');\n\nconst summary = analysis.summary || '원인 분석 요약을 생성하지 못했습니다.';\nconst impact = analysis.impact || '영향 범위를 확인 중입니다.';\nconst cause = analysis.cause || '원인을 확정하지 못했습니다.';\nconst evidence = Array.isArray(analysis.evidence) ? analysis.evidence : [];\nconst recommendations = Array.isArray(analysis.recommendations) ? analysis.recommendations : [];\n\nconst evidenceText = evidence.length ? evidence.map((e) => `- ${e}`).join('\\n') : '- 추가 근거 수집 필요';\nconst recommendationText = recommendations.length ? recommendations.map((r, i) => `${i + 1}) ${r}`).join('\\n') : '1) 재현 로그 확대 수집\\n2) 관련 경로 참조 정리';\n\nconst comment = [\n  '분석 완료 공유드립니다.',\n  '',\n  `- 이슈: ${payload.issueId} (${payload.platform}, ${payload.appVersion || 'unknown'})`,\n  `- 발생 시각: ${payload.eventTime}`,\n  `- 분석 요약: ${summary}`,\n  `- 영향 범위: ${impact}`,\n  `- 핵심 원인: ${cause}`,\n  '- 근거:',\n  evidenceText,\n  '',\n  '제안 액션',\n  recommendationText,\n  '',\n  '본 프로젝트 기준으로 권장 수정사항까지 바로 반영할까요?'\n].join('\\n');\n\nreturn [{\n  json: {\n    ...payload,\n    channelId,\n    threadTs,\n    rcaComment: comment,\n    recommendations\n  }\n}];"
+        "jsCode": "const payload = $node['Normalize Payload'].json;\nconst history = $node['Find Slack Thread'].json;\nconst llm = $node['AI Agent Analyze'].json;\n\nif (!history.ok) {\n  throw new Error(`Slack conversations.history failed: ${history.error || 'unknown'}`);\n}\n\nconst messages = Array.isArray(history.messages) ? history.messages : [];\nconst issueId = payload.issueId;\nconst issueTitle = payload.issueTitle || '';\nconst toText = (m) => [m.text || '', JSON.stringify(m.blocks || []), JSON.stringify(m.attachments || [])].join(' ');\n\nlet matched = messages.find((m) => toText(m).includes(issueId));\nif (!matched && issueTitle) {\n  matched = messages.find((m) => toText(m).includes(issueTitle));\n}\nif (!matched) {\n  throw new Error(`Cannot find Slack thread for issueId=${issueId} in channel=${payload.channelId}`);\n}\n\nconst channelId = payload.channelId;\nconst threadTs = matched.thread_ts || matched.ts;\nif (!channelId || !threadTs) throw new Error('channelId/threadTs not found');\n\nlet analysis = {};\nconst content = llm?.choices?.[0]?.message?.content;\nif (typeof content === 'string' && content.trim()) {\n  try {\n    analysis = JSON.parse(content);\n  } catch (e) {\n    throw new Error(`Failed to parse AI analysis JSON: ${e.message}`);\n  }\n}\n\nconst summary = analysis.summary || '원인 분석 요약을 생성하지 못했습니다.';\nconst impact = analysis.impact || '영향 범위를 확인 중입니다.';\nconst cause = analysis.cause || '원인을 확정하지 못했습니다.';\nconst evidence = Array.isArray(analysis.evidence) ? analysis.evidence : [];\nconst recommendations = Array.isArray(analysis.recommendations) ? analysis.recommendations : [];\n\nconst evidenceText = evidence.length ? evidence.map((e) => `- ${e}`).join('\\n') : '- 추가 근거 수집 필요';\nconst recommendationText = recommendations.length ? recommendations.map((r, i) => `${i + 1}) ${r}`).join('\\n') : '1) 재현 로그 확대 수집\\n2) 관련 경로 참조 정리';\n\nconst comment = [\n  '분석 완료 공유드립니다.',\n  '',\n  `- 이슈: ${payload.issueId} (${payload.platform}, ${payload.appVersion || 'unknown'})`,\n  `- 발생 시각: ${payload.eventTime}`,\n  `- 분석 요약: ${summary}`,\n  `- 영향 범위: ${impact}`,\n  `- 핵심 원인: ${cause}`,\n  '- 근거:',\n  evidenceText,\n  '',\n  '제안 액션',\n  recommendationText,\n  '',\n  '본 프로젝트 기준으로 권장 수정사항까지 바로 반영할까요?'\n].join('\\n');\n\nreturn [{\n  json: {\n    ...payload,\n    channelId,\n    threadTs,\n    rcaComment: comment,\n    recommendations\n  }\n}];"
       },
       "id": "c639061b-10d3-4bc6-a4d8-fd61c89bb624",
       "name": "Build RCA Comment",
@@ -187,13 +187,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/reply-thread' }}",
+        "url": "https://slack.com/api/chat.postMessage",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.SLACK_BOT_TOKEN }}"
             },
             {
               "name": "Content-Type",
@@ -203,7 +203,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { channelId: $json.channelId, threadTs: $json.threadTs, text: $json.rcaComment } }}",
+        "jsonBody": "={{ { channel: $json.channelId, thread_ts: $json.threadTs, text: $json.rcaComment } }}",
         "options": {
           "timeout": 120000
         }
@@ -220,13 +220,21 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/github/issues' }}",
+        "url": "={{ 'https://api.github.com/repos/' + $env.GITHUB_OWNER + '/' + $env.GITHUB_REPO + '/issues' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.GITHUB_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
             },
             {
               "name": "Content-Type",
@@ -265,14 +273,22 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/github/branches' }}",
+        "method": "GET",
+        "url": "={{ 'https://api.github.com/repos/' + $env.GITHUB_OWNER + '/' + $env.GITHUB_REPO }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.GITHUB_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
             },
             {
               "name": "Content-Type",
@@ -280,15 +296,12 @@
             }
           ]
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { owner: $env.GITHUB_OWNER, repo: $env.GITHUB_REPO, branch: $json.branchName, fromBranch: $env.TARGET_REPO_DEFAULT_BRANCH || 'main' } }}",
         "options": {
           "timeout": 120000
         }
       },
       "id": "cb1a1e94-f23d-45ee-a4c3-9ce0c9f80457",
-      "name": "Create GitHub Branch",
+      "name": "Check GitHub Repo Access",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -298,7 +311,7 @@
     },
     {
       "parameters": {
-        "command": "=bash /opt/n8n/scripts/apply_recommended_fix.sh \"{{$node[\"Normalize Payload\"].json.issueId}}\" \"{{$node[\"Build Git Context\"].json.issueNumber}}\""
+        "command": "=sh /opt/n8n/scripts/apply_recommended_fix.sh \"{{$node[\"Normalize Payload\"].json.issueId}}\" \"{{$node[\"Build Git Context\"].json.issueNumber}}\""
       },
       "id": "8a3e547b-c559-4ce8-b70d-8f4b0c1cfbf5",
       "name": "Apply Recommended Fix",
@@ -311,7 +324,7 @@
     },
     {
       "parameters": {
-        "command": "=bash /opt/n8n/scripts/commit_and_push.sh \"{{$node[\"Build Git Context\"].json.branchName}}\" \"{{$node[\"Build Git Context\"].json.issueNumber}}\" \"{{$node[\"Normalize Payload\"].json.issueId}}\""
+        "command": "=sh /opt/n8n/scripts/commit_and_push.sh \"{{$node[\"Build Git Context\"].json.branchName}}\" \"{{$node[\"Build Git Context\"].json.issueNumber}}\" \"{{$node[\"Normalize Payload\"].json.issueId}}\""
       },
       "id": "eaf1b778-7ea4-4cf5-b62a-81f31de6593b",
       "name": "Commit and Push",
@@ -324,7 +337,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $node['Normalize Payload'].json;\nconst thread = $node['Find Slack Thread'].json;\nconst gitCtx = $node['Build Git Context'].json;\nconst push = $node['Commit and Push'].json;\n\nconst lines = String(push.stdout || '').split(/\\n/);\nconst kv = {};\nfor (const line of lines) {\n  const i = line.indexOf('=');\n  if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1);\n}\n\nconst noChanges = kv.NO_CHANGES === 'true';\nconst commitSha = kv.COMMIT_SHA || '';\nconst baseRepoUrl = `https://github.com/${$env.GITHUB_OWNER}/${$env.GITHUB_REPO}`;\nconst branchUrl = `${baseRepoUrl}/tree/${gitCtx.encodedBranchName}`;\nconst commitUrl = commitSha ? `${baseRepoUrl}/commit/${commitSha}` : '';\n\nconst text = [\n  '조치 완료 공유드립니다.',\n  `- 이슈: ${gitCtx.issueUrl || '(created)'}`,\n  `- 브랜치: ${gitCtx.branchName} (${branchUrl})`,\n  noChanges ? '- 코드 변경: 없음 (권장 수정 스크립트가 no-op 반환)' : `- 커밋: ${commitUrl}`,\n  `- 대상 Crashlytics: ${payload.issueId}`\n].join('\\n');\n\nreturn [{\n  json: {\n    channelId: thread.channelId || payload.channelId,\n    threadTs: thread.threadTs,\n    finalComment: text\n  }\n}];"
+        "jsCode": "const payload = $node['Normalize Payload'].json;\nconst rca = $node['Build RCA Comment'].json;\nconst gitCtx = $node['Build Git Context'].json;\nconst push = $node['Commit and Push'].json;\n\nconst lines = String(push.stdout || '').split(/\\n/);\nconst kv = {};\nfor (const line of lines) {\n  const i = line.indexOf('=');\n  if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1);\n}\n\nconst noChanges = kv.NO_CHANGES === 'true';\nconst commitSha = kv.COMMIT_SHA || '';\nconst baseRepoUrl = `https://github.com/${$env.GITHUB_OWNER}/${$env.GITHUB_REPO}`;\nconst branchUrl = `${baseRepoUrl}/tree/${gitCtx.encodedBranchName}`;\nconst commitUrl = commitSha ? `${baseRepoUrl}/commit/${commitSha}` : '';\n\nconst text = [\n  '조치 완료 공유드립니다.',\n  `- 이슈: ${gitCtx.issueUrl || '(created)'}`,\n  `- 브랜치: ${gitCtx.branchName} (${branchUrl})`,\n  noChanges ? '- 코드 변경: 없음 (권장 수정 스크립트가 no-op 반환)' : `- 커밋: ${commitUrl}`,\n  `- 대상 Crashlytics: ${payload.issueId}`\n].join('\\n');\n\nreturn [{\n  json: {\n    channelId: rca.channelId || payload.channelId,\n    threadTs: rca.threadTs,\n    finalComment: text\n  }\n}];"
       },
       "id": "eca407f8-059e-4fdd-ae46-5938a0329bc5",
       "name": "Build Completion Comment",
@@ -338,13 +351,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/reply-thread' }}",
+        "url": "https://slack.com/api/chat.postMessage",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.SLACK_BOT_TOKEN }}"
             },
             {
               "name": "Content-Type",
@@ -354,7 +367,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { channelId: $json.channelId, threadTs: $json.threadTs, text: $json.finalComment } }}",
+        "jsonBody": "={{ { channel: $json.channelId, thread_ts: $json.threadTs, text: $json.finalComment } }}",
         "options": {
           "timeout": 120000
         }
@@ -438,14 +451,14 @@
       "main": [
         [
           {
-            "node": "Firebase Analyze",
+            "node": "AI Agent Analyze",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Firebase Analyze": {
+    "AI Agent Analyze": {
       "main": [
         [
           {
@@ -493,14 +506,14 @@
       "main": [
         [
           {
-            "node": "Create GitHub Branch",
+            "node": "Check GitHub Repo Access",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Create GitHub Branch": {
+    "Check GitHub Repo Access": {
       "main": [
         [
           {

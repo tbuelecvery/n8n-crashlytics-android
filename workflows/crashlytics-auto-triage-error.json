@@ -28,13 +28,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.MCP_BRIDGE_BASE_URL + '/slack/reply-thread' }}",
+        "url": "https://slack.com/api/chat.postMessage",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.MCP_BRIDGE_TOKEN }}"
+              "value": "={{ 'Bearer ' + $env.SLACK_BOT_TOKEN }}"
             },
             {
               "name": "Content-Type",
@@ -44,7 +44,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { channelId: $json.channelId, threadTs: $json.threadTs, text: $json.text } }}",
+        "jsonBody": "={{ $json.threadTs ? { channel: $json.channelId, thread_ts: $json.threadTs, text: $json.text } : { channel: $json.channelId, text: $json.text } }}",
         "options": {
           "timeout": 120000
         }
