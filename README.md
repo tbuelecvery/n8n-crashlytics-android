@@ -1,157 +1,67 @@
-# n8n Crashlytics Auto Triage (Self-Hosted)
+# n8n Crashlytics Auto Triage (Slack Events 기반)
 
-Crashlytics webhook -> Slack thread RCA -> GitHub Issue -> `#<issue_number>` branch -> auto-fix/commit/push -> Slack completion reply.
+이 레포는 `Slack Events -> n8n -> OpenAI/Slack/GitHub API` 흐름으로 Crashlytics 이슈 대응을 자동화합니다.
 
-## 1. What This Scaffold Includes
+현재 기본 구조:
+- 입력: Slack 채널 메시지 이벤트
+- 처리: 원인 분석/조치안 생성, GitHub Issue/브랜치/커밋/푸시
+- 출력: 동일 Slack 스레드에 분석/완료 댓글
 
-- `docker-compose.yml`: `n8n + postgres + redis` in queue mode
-- `.env.example`: required environment variables
-- `workflows/crashlytics-auto-triage.json`: main pipeline (import into n8n)
-- `workflows/crashlytics-auto-triage-error.json`: error workflow (import into n8n)
-- `scripts/apply_recommended_fix.sh`: project-specific fix hook + demo fallback
-- `scripts/commit_and_push.sh`: branch checkout/commit/push wrapper
-- `scripts/encode_branch_for_url.sh`: `#` -> `%23` utility
-- `scripts/run_local_smoke.sh`: local webhook smoke test
-- `payloads/crashlytics-sample.json`: sample payload
+중요: 현재 운영 기준에서 **Google Cloud webhook 연동은 필수 아님** (Slack Events 단일 경로).
 
-## 2. Architecture
+## 빠른 시작
 
-- **Postgres**: workflow definitions, execution history, credentials metadata (persistent state)
-- **Redis**: queue transport between n8n main and worker (execution coordination)
-- **n8n main**: receives webhook and orchestrates flow
-- **n8n worker**: performs long-running tasks (analysis/git operations)
-- **Direct API calls from n8n**: Slack/GitHub/OpenAI are called from HTTP Request nodes (no MCP bridge dependency)
-
-## 3. Prerequisites
-
-- Docker Desktop
-- Git push access to target repository
-- API tokens:
-  - Slack Bot Token (`chat:write`, `channels:history` or equivalent scope for target channel)
-  - GitHub Token (`repo` scope for issues + branch push)
-  - OpenAI API key
-
-## 4. Local Setup
-
-1. Copy env file.
-
+1. 환경 파일 준비
 ```bash
-cd automation/n8n-crashlytics
 cp .env.example .env
 ```
 
-2. Fill `.env` values.
-
-Required minimum:
-- `N8N_ENCRYPTION_KEY` (fixed secret, 32+ chars)
-- `TARGET_REPO_PATH` (absolute path on your host)
+2. `.env` 필수 값 입력
+- `N8N_ENCRYPTION_KEY`
+- `TARGET_REPO_PATH`
 - `OPENAI_API_KEY`
 - `SLACK_BOT_TOKEN`
 - `GITHUB_TOKEN`
 - `GITHUB_OWNER`
 - `GITHUB_REPO`
-- `SLACK_DEFAULT_CHANNEL_ID` (optional but recommended)
+- `SLACK_DEFAULT_CHANNEL_ID`
 
-3. Start stack.
-
+3. 스택 기동
 ```bash
 docker compose up -d
 ```
 
-4. Open n8n editor.
-- `http://localhost:5678`
+4. n8n에서 워크플로우 import/활성화
+- `workflows/crashlytics-auto-triage.json` (활성화)
+- `workflows/slack-events-ingest.json` (활성화)
+- `workflows/crashlytics-auto-triage-error.json` (선택)
 
-## 5. Import Workflows
+5. Slack App Event Subscriptions 설정
+- Request URL 등록, bot events/scopes 설정, 앱 재설치, 채널 봇 초대
+- 상세 절차: `docs/operations/slack-events-runbook.md` (Slack Events 운영 가이드)
 
-1. Import `workflows/crashlytics-auto-triage.json`
-2. Import `workflows/crashlytics-auto-triage-error.json`
-3. Review every HTTP Request node URL/headers/body and required tokens
-4. Activate both workflows
+## 운영 문서
 
-## 6. Branch Naming Rule (Critical)
+- 상세 운영/장애 대응 문서: `docs/operations/slack-events-runbook.md` (Slack Events 운영 가이드)
+- 재부팅 복구 스킬: `~/.codex/skills/n8n-reboot-recovery/SKILL.md`
 
-Branch format is always:
-- `#<issue_number>`
-- Example: `#1212`
+## 재부팅/중단 복구
 
-### Shell Safety Rule
+Codex에서 다음 한 줄로 복구:
+- `$n8n-reboot-recovery`
 
-`#` is a shell comment character if not quoted.
-Always keep branch names quoted in shell commands.
+복구 결과로 출력되는 `WEBHOOK_URL_SLACK_EVENTS`를 Slack App Request URL에 반영하면 됩니다.
 
+## 브랜치 규칙 (중요)
+
+- 브랜치명: `#<issue_number>`
+- 쉘 명령에서 반드시 따옴표 사용:
 ```bash
 git checkout -b '#1212'
 git push origin '#1212'
 ```
+- URL에서는 `#`를 `%23`으로 인코딩
 
-### URL Rule
+## 참고
 
-When building branch links, encode `#` as `%23`.
-
-- Branch URL example:
-  - `https://github.com/<owner>/<repo>/tree/%231212`
-
-## 7. End-to-End Smoke Test
-
-```bash
-./scripts/run_local_smoke.sh
-```
-
-or
-
-```bash
-curl -X POST 'http://localhost:5678/webhook/crashlytics-webhook' \
-  -H 'Content-Type: application/json' \
-  --data-binary @payloads/crashlytics-sample.json
-```
-
-Expected flow:
-1. Webhook accepted
-2. issueId lock acquired
-3. Slack thread resolved (direct Slack API)
-4. AI analysis generated (OpenAI API)
-5. RCA reply posted to Slack thread
-6. GitHub issue created (direct GitHub API)
-7. `#<issue_number>` branch pushed
-8. auto-fix script executed
-9. commit/push attempted
-10. completion reply posted to Slack thread
-
-## 8. Project-Specific Auto Fix Hook
-
-The default `apply_recommended_fix.sh` behavior:
-- If `./scripts/auto-fix-crashlytics.sh` exists in target repo, it is used.
-- Otherwise, no code changes are made unless `AUTO_FIX_DEMO_MODE=true`.
-
-To implement real fixes, add this file in target repo:
-
-```bash
-scripts/auto-fix-crashlytics.sh
-```
-
-Signature:
-
-```bash
-./scripts/auto-fix-crashlytics.sh <issue_id> <issue_number>
-```
-
-## 9. Migration Checklist (Other MacBook)
-
-1. Install and run Docker Desktop
-2. Clone this automation folder/repo
-3. Clone target app repository
-4. Copy `.env.example` -> `.env` and set local absolute paths
-5. Use the **same** `N8N_ENCRYPTION_KEY` as original machine
-6. Ensure Git auth is configured (SSH key or PAT)
-7. `docker compose up -d`
-8. Import both workflow JSON files
-9. Verify Slack/GitHub/OpenAI token reachability
-10. Run smoke test payload
-11. Verify Slack reply, GitHub issue, branch creation, and push
-
-## 10. Operational Notes
-
-- Keep idempotency by `issueId` (already implemented with static global lock in workflow)
-- For production, replace static lock with durable lock table (Postgres/Redis)
-- Add retry policy per external call and per-node timeout
-- Add alerting via error workflow
+- 상세 체크리스트/트러블슈팅은 README에 중복 작성하지 않고 Runbook을 단일 기준으로 유지합니다.

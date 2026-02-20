@@ -1,0 +1,99 @@
+{
+  "name": "Slack Events Ingest",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "path": "slack-events",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a9e3ed5c-92d3-4f6d-9f0d-361469dbec39",
+      "name": "SlackEventsWebhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let body = $json;\n\nif (body && typeof body === 'object' && body.body && typeof body.body === 'object') {\n  body = body.body;\n}\n\nif (body && body.type === 'url_verification') {\n  return [{ json: { mode: 'url_verification', challenge: body.challenge || '' } }];\n}\n\nif (!body || body.type !== 'event_callback' || !body.event) {\n  return [{ json: { mode: 'ignored', reason: 'not_event_callback' } }];\n}\n\nconst event = body.event;\nif (event.type !== 'message') {\n  return [{ json: { mode: 'ignored', reason: 'not_message' } }];\n}\n\n// Ignore thread replies to avoid infinite loops from bot comments.\nif (event.thread_ts && event.thread_ts !== event.ts) {\n  return [{ json: { mode: 'ignored', reason: 'thread_reply' } }];\n}\n\nconst channelId = event.channel || '';\nconst allowedChannel = $env.SLACK_DEFAULT_CHANNEL_ID || '';\nif (allowedChannel && channelId && channelId !== allowedChannel) {\n  return [{ json: { mode: 'ignored', reason: 'channel_filtered' } }];\n}\n\nconst text = String(event.text || '').trim();\nif (!text) {\n  return [{ json: { mode: 'ignored', reason: 'empty_text' } }];\n}\n\nconst issueFromUrl = text.match(/issues\\/([A-Za-z0-9_-]+)/i);\nconst issueFromLabel = text.match(/issue(?:\\s*id)?\\s*[:#-]?\\s*([A-Za-z0-9_-]{6,})/i);\nconst issueId = (issueFromUrl && issueFromUrl[1]) || (issueFromLabel && issueFromLabel[1]) || `slack-${String(event.ts || Date.now()).replace('.', '-')}`;\n\nlet eventTime = new Date().toISOString();\nif (event.ts && /^\\d+(\\.\\d+)?$/.test(String(event.ts))) {\n  eventTime = new Date(Number(event.ts) * 1000).toISOString();\n}\n\nconst firstLine = text.split('\\n').map((line) => line.trim()).find(Boolean) || 'Crashlytics alert';\nconst threadTs = event.thread_ts || event.ts || '';\nconst normalizedChannel = channelId || allowedChannel;\n\nif (!normalizedChannel || !threadTs) {\n  return [{ json: { mode: 'ignored', reason: 'missing_channel_or_ts' } }];\n}\n\nreturn [{\n  json: {\n    mode: 'forward',\n    forwardPayload: {\n      issueId,\n      issueTitle: firstLine.slice(0, 140),\n      platform: 'Android',\n      appVersion: '',\n      eventTime,\n      fatal: true,\n      channelId: normalizedChannel,\n      threadTs,\n      traceId: `slack:${issueId}`\n    }\n  }\n}];"
+      },
+      "id": "a704de1e-6ef9-462b-97f4-8133e7f6a1e7",
+      "name": "Parse Slack Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if ($json.mode !== 'forward') {\n  return [{ json: $json }];\n}\n\nconst payload = $json.forwardPayload || {};\n\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'http://n8n-main:5678/webhook/QjqFiU4AS3RetyYG/webhook/crashlytics-webhook',\n    body: payload,\n    json: true,\n    timeout: 120000\n  });\n\n  return [{\n    json: {\n      ...$json,\n      dispatchOk: true,\n      dispatchResponse: response\n    }\n  }];\n} catch (error) {\n  return [{\n    json: {\n      ...$json,\n      dispatchOk: false,\n      dispatchError: error.message || String(error)\n    }\n  }];\n}"
+      },
+      "id": "5a90f60a-b167-4409-a123-ad9bd58ec1ee",
+      "name": "Forward If Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if ($json.mode === 'url_verification' && $json.challenge) {\n  return [{ json: { challenge: $json.challenge } }];\n}\n\nif ($json.mode === 'forward') {\n  return [{\n    json: {\n      ok: true,\n      message: 'accepted',\n      dispatchOk: $json.dispatchOk !== false,\n      dispatchStatus: $json.dispatchStatus || undefined,\n      dispatchError: $json.dispatchError || undefined,\n      dispatchResponse: $json.dispatchResponse || undefined\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ok: true,\n    ignored: true,\n    mode: $json.mode || 'ignored',\n    reason: $json.reason || ''\n  }\n}];"
+      },
+      "id": "4dc04d72-3634-45f4-af4e-fafbfd9b7e7f",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "SlackEventsWebhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Slack Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Slack Event": {
+      "main": [
+        [
+          {
+            "node": "Forward If Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forward If Needed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "dfffc8a0-d2f0-4487-9b68-ecc6650990af"
+}
