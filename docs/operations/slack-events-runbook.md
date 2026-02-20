@@ -56,6 +56,11 @@ docker compose ps
 Codex에서 아래 명령만 실행:
 - `$n8n-reboot-recovery`
 
+스킬을 아직 설치하지 않았다면 먼저 레포 기준으로 설치:
+```bash
+./scripts/install_skills.sh n8n-reboot-recovery
+```
+
 정상 실행 시 확인할 출력:
 - `STATUS=ok`
 - `TUNNEL_URL`

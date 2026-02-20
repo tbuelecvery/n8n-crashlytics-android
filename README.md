@@ -45,6 +45,24 @@ docker compose up -d
 - 상세 운영/장애 대응 문서: `docs/operations/slack-events-runbook.md` (Slack Events 운영 가이드)
 - 재부팅 복구 스킬: `~/.codex/skills/n8n-reboot-recovery/SKILL.md`
 
+## 로컬 스킬 포함/설치
+
+이 레포는 `n8n-reboot-recovery` 스킬을 `skills/n8n-reboot-recovery` 경로로 함께 버전관리합니다.
+
+- 레포 스킬을 Codex 로컬 경로로 설치:
+```bash
+./scripts/install_skills.sh n8n-reboot-recovery
+```
+
+- 레포의 모든 스킬 설치:
+```bash
+./scripts/install_skills.sh
+```
+
+- 설치 위치:
+  - 기본: `~/.codex/skills`
+  - `CODEX_HOME` 지정 시: `$CODEX_HOME/skills`
+
 ## 재부팅/중단 복구
 
 Codex에서 다음 한 줄로 복구:

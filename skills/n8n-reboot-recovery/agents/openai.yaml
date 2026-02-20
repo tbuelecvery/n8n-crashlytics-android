@@ -1,0 +1,4 @@
+interface:
+  display_name: "n8n Reboot Recovery"
+  short_description: "Recover n8n stack and webhook tunnel after reboot"
+  default_prompt: "Use $n8n-reboot-recovery to restore Docker, n8n, and cloudflared after a PC restart, then print manual webhook update steps."
