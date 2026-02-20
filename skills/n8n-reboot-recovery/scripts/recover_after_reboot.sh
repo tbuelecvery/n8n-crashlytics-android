@@ -11,9 +11,14 @@ WAIT_N8N_SECONDS="${WAIT_N8N_SECONDS:-90}"
 START_TUNNEL="${START_TUNNEL:-true}"
 WAIT_TUNNEL_SECONDS="${WAIT_TUNNEL_SECONDS:-45}"
 TUNNEL_LOG="${TUNNEL_LOG:-/tmp/n8n-cloudflared.log}"
+ENV_FILE_NAME="${ENV_FILE_NAME:-.env}"
 
 DOCKER_WAS_INSTALLED="false"
 CLOUDFLARED_WAS_INSTALLED="false"
+ENV_PLACEHOLDER_KEYS="none"
+BIGQUERY_CONFIGURED="false"
+BIGQUERY_READY="false"
+BIGQUERY_MISSING_KEYS="none"
 
 die() {
   echo "STATUS=error"
@@ -23,6 +28,31 @@ die() {
 
 has_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+join_csv() {
+  local out=""
+  local item
+  for item in "$@"; do
+    [ -n "${item}" ] || continue
+    if [ -z "${out}" ]; then
+      out="${item}"
+    else
+      out="${out},${item}"
+    fi
+  done
+  echo "${out}"
+}
+
+is_placeholder_value() {
+  case "${1:-}" in
+    replace-with*|xoxb-replace-me|ghp_replace_me|/Users/you/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 ensure_brew() {
@@ -79,6 +109,67 @@ docker compose version >/dev/null 2>&1 || die "docker compose is not available"
 [ -d "${REPO_PATH}" ] || die "repo path not found: ${REPO_PATH}"
 
 cd "${REPO_PATH}"
+
+analyze_env_config() {
+  local env_file="${REPO_PATH}/${ENV_FILE_NAME}"
+  local bq_project=""
+  local bq_dataset=""
+  local bq_sa=""
+  local placeholders=()
+  local missing=()
+
+  if [ ! -f "${env_file}" ]; then
+    ENV_PLACEHOLDER_KEYS="env_file_missing"
+    BIGQUERY_CONFIGURED="false"
+    BIGQUERY_READY="false"
+    BIGQUERY_MISSING_KEYS="BIGQUERY_PROJECT_ID,BIGQUERY_DATASET_ID,BIGQUERY_SERVICE_ACCOUNT_JSON"
+    return
+  fi
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      ''|\#*) continue ;;
+    esac
+
+    case "${key}" in
+      BIGQUERY_PROJECT_ID) bq_project="${value}" ;;
+      BIGQUERY_DATASET_ID) bq_dataset="${value}" ;;
+      BIGQUERY_SERVICE_ACCOUNT_JSON) bq_sa="${value}" ;;
+    esac
+
+    if is_placeholder_value "${value}"; then
+      placeholders+=("${key}")
+    fi
+  done < "${env_file}"
+
+  if [ "${#placeholders[@]}" -gt 0 ]; then
+    ENV_PLACEHOLDER_KEYS="$(join_csv "${placeholders[@]}")"
+  fi
+
+  if [ -n "${bq_project}" ] || [ -n "${bq_dataset}" ] || [ -n "${bq_sa}" ]; then
+    BIGQUERY_CONFIGURED="true"
+  fi
+
+  if [ -z "${bq_project}" ] || is_placeholder_value "${bq_project}"; then
+    missing+=("BIGQUERY_PROJECT_ID")
+  fi
+  if [ -z "${bq_dataset}" ] || is_placeholder_value "${bq_dataset}"; then
+    missing+=("BIGQUERY_DATASET_ID")
+  fi
+  if [ -z "${bq_sa}" ] || is_placeholder_value "${bq_sa}"; then
+    missing+=("BIGQUERY_SERVICE_ACCOUNT_JSON")
+  fi
+
+  if [ "${#missing[@]}" -eq 0 ]; then
+    BIGQUERY_READY="true"
+    BIGQUERY_MISSING_KEYS="none"
+  else
+    BIGQUERY_READY="false"
+    BIGQUERY_MISSING_KEYS="$(join_csv "${missing[@]}")"
+  fi
+}
+
+analyze_env_config
 docker compose up -d >/dev/null
 
 wait_for_n8n_health() {
@@ -168,9 +259,14 @@ fi
 
 echo "STATUS=ok"
 echo "REPO_PATH=${REPO_PATH}"
+echo "ENV_FILE=${REPO_PATH}/${ENV_FILE_NAME}"
+echo "ENV_PLACEHOLDER_KEYS=${ENV_PLACEHOLDER_KEYS}"
 echo "N8N_HEALTH_URL=http://localhost:${N8N_PORT}/healthz"
 echo "DOCKER_INSTALLED_NOW=${DOCKER_WAS_INSTALLED}"
 echo "CLOUDFLARED_INSTALLED_NOW=${CLOUDFLARED_WAS_INSTALLED}"
+echo "BIGQUERY_CONFIGURED=${BIGQUERY_CONFIGURED}"
+echo "BIGQUERY_READY=${BIGQUERY_READY}"
+echo "BIGQUERY_MISSING_KEYS=${BIGQUERY_MISSING_KEYS}"
 echo "WEBHOOK_PATH=${WEBHOOK_PATH}"
 echo "WEBHOOK_PATH_SLACK_EVENTS=${WEBHOOK_PATH_SLACK_EVENTS}"
 echo "TUNNEL_URL=${TUNNEL_URL}"
@@ -184,3 +280,8 @@ else
 fi
 echo "MANUAL_2=Reinstall Slack app (if scopes/events changed) and invite bot to target channel"
 echo "MANUAL_3=Send a test event and verify new n8n execution is success"
+if [ "${BIGQUERY_READY}" != "true" ]; then
+  echo "MANUAL_4=Fill BigQuery env keys in .env (${BIGQUERY_MISSING_KEYS}), then run: docker compose up -d n8n n8n-worker"
+else
+  echo "MANUAL_4=Trigger one Slack event and confirm BigQuery polling status comments appear in the same thread"
+fi

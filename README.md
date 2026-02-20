@@ -6,6 +6,7 @@
 - 입력: Slack 채널 메시지 이벤트
 - 처리: 원인 분석/조치안 생성, GitHub Issue/브랜치/커밋/푸시
 - 출력: 동일 Slack 스레드에 분석/완료 댓글
+- 보강(선택): BigQuery 폴링으로 Crashlytics 컨텍스트 조회 후 분석 정확도 향상
 
 중요: 현재 운영 기준에서 **Google Cloud webhook 연동은 필수 아님** (Slack Events 단일 경로).
 
@@ -26,6 +27,15 @@ cp .env.example .env
 - `GITHUB_REPO`
 - `SLACK_DEFAULT_CHANNEL_ID`
 
+BigQuery 폴링(선택) 사용 시 추가:
+- `BIGQUERY_PROJECT_ID`
+- `BIGQUERY_DATASET_ID` (기본 `firebase_crashlytics`)
+- `BIGQUERY_SERVICE_ACCOUNT_JSON`
+- `BIGQUERY_CRASHLYTICS_TABLE` (선택: 비워두면 `issue_id` 컬럼 기반 자동 탐색)
+- `BIGQUERY_POLL_INITIAL_DELAY_SECONDS` (기본 90)
+- `BIGQUERY_POLL_INTERVAL_SECONDS` (기본 180)
+- `BIGQUERY_POLL_MAX_ATTEMPTS` (기본 6)
+
 3. 스택 기동
 ```bash
 docker compose up -d
@@ -44,6 +54,15 @@ docker compose up -d
 
 - 상세 운영/장애 대응 문서: `docs/operations/slack-events-runbook.md` (Slack Events 운영 가이드)
 - 재부팅 복구 스킬: `~/.codex/skills/n8n-reboot-recovery/SKILL.md`
+
+## BigQuery 폴링 동작
+
+- `Crashlytics Auto Triage`가 Slack 스레드를 찾은 뒤 BigQuery를 폴링합니다.
+- 기본값: 최초 90초 대기 후 180초 간격으로 최대 6회 조회
+- 각 시도 결과를 동일 스레드에 상태 댓글로 남깁니다.
+  - 성공: 컨텍스트 수집 성공 댓글
+  - 실패: 다음 폴링으로 넘긴다는 댓글
+  - 최종 실패: 기본 페이로드로 계속 진행 댓글
 
 ## 로컬 스킬 포함/설치
 
@@ -69,6 +88,7 @@ Codex에서 다음 한 줄로 복구:
 - `$n8n-reboot-recovery`
 
 복구 결과로 출력되는 `WEBHOOK_URL_SLACK_EVENTS`를 Slack App Request URL에 반영하면 됩니다.
+또한 출력값 `BIGQUERY_READY`/`BIGQUERY_MISSING_KEYS`로 BigQuery 폴링 준비 상태를 바로 확인할 수 있습니다.
 
 ## 브랜치 규칙 (중요)
 

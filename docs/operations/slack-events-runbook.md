@@ -25,7 +25,26 @@ docker compose up -d
 - 필수: `Crashlytics Auto Triage`, `Slack Events Ingest`
 - 선택: `Crashlytics Auto Triage Error Handler`
 
-### 2.2 Slack 앱 설정
+### 2.2 BigQuery 폴링(선택, 권장)
+
+Slack 본문만으로 분석 정보가 부족할 때, `Crashlytics Auto Triage`가 BigQuery를 폴링해 추가 컨텍스트를 붙입니다.
+
+`.env`에 다음 키를 설정:
+- `BIGQUERY_PROJECT_ID`
+- `BIGQUERY_DATASET_ID` (기본 `firebase_crashlytics`)
+- `BIGQUERY_SERVICE_ACCOUNT_JSON` (원문 JSON 1줄 또는 base64)
+- `BIGQUERY_CRASHLYTICS_TABLE` (선택, 비우면 자동 탐색)
+- `BIGQUERY_POLL_INITIAL_DELAY_SECONDS` (기본 90)
+- `BIGQUERY_POLL_INTERVAL_SECONDS` (기본 180)
+- `BIGQUERY_POLL_MAX_ATTEMPTS` (기본 6)
+- `BIGQUERY_CONTEXT_MAX_CHARS` (기본 12000)
+
+적용:
+```bash
+docker compose up -d
+```
+
+### 2.3 Slack 앱 설정
 
 1. `Event Subscriptions` 활성화
 2. `Request URL` 입력
@@ -65,12 +84,16 @@ Codex에서 아래 명령만 실행:
 - `STATUS=ok`
 - `TUNNEL_URL`
 - `WEBHOOK_URL_SLACK_EVENTS`
+- `ENV_PLACEHOLDER_KEYS` (placeholder 키 이름만 출력)
+- `BIGQUERY_CONFIGURED`, `BIGQUERY_READY`, `BIGQUERY_MISSING_KEYS`
 - `MANUAL_1`, `MANUAL_2`, `MANUAL_3`
+- `MANUAL_4`
 
 복구 후 순서:
 1. Slack 앱의 `Request URL`을 `WEBHOOK_URL_SLACK_EVENTS`로 갱신
 2. 필요 시 앱 재설치 + 채널 봇 초대 상태 확인
 3. 테스트 이벤트 전송 후 n8n 실행 결과 확인
+4. `BIGQUERY_READY=false`면 `BIGQUERY_MISSING_KEYS`에 나온 키를 `.env`에 채우고 `docker compose up -d n8n n8n-worker` 실행
 
 ## 5. 동작 검증 방법
 
@@ -85,6 +108,14 @@ Codex에서 아래 명령만 실행:
 - n8n에서 아래 실행이 순서대로 성공하는지 확인
 - `Slack Events Ingest`
 - `Crashlytics Auto Triage`
+
+### 5.3 BigQuery 폴링 검증
+
+`Crashlytics Auto Triage` 실행 시, 동일 Slack 스레드에 아래 상태 댓글이 순서대로 찍히면 정상:
+- 시작: 최초 대기 + 최대 폴링 횟수 안내
+- 미수집: `데이터 없음, N초 후 재시도`
+- 수집 성공: `컨텍스트 수집 성공`
+- 최종 미수집: `기본 페이로드 기반으로 계속 진행`
 
 ## 6. 장애 대응
 
@@ -111,6 +142,18 @@ Codex에서 아래 명령만 실행:
 1. `Crashlytics Auto Triage` 활성화 상태 확인
 2. `.env`의 `SLACK_DEFAULT_CHANNEL_ID` 값 확인
 3. Slack 앱 재설치 및 채널 봇 초대
+
+### 증상 4: BigQuery 폴링이 계속 미수집
+
+가능 원인:
+- Crashlytics BigQuery export 초기 반영 지연
+- `BIGQUERY_DATASET_ID` 또는 테이블명 오설정
+- 서비스 계정 권한 누락
+
+조치:
+1. `.env`의 BigQuery 키 이름/값 형식 재확인 (`BIGQUERY_SERVICE_ACCOUNT_JSON` 포함)
+2. 필요 시 `BIGQUERY_CRASHLYTICS_TABLE` 명시 설정
+3. 폴링 간격/횟수 상향 후 재시도
 
 ### 증상 3: 재부팅 직후 `healthz` 실패
 
